@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 
 class AutoTyperService : AccessibilityService() {
 
+    private var lastInteractedNode: AccessibilityNodeInfo? = null
     private var windowManager: WindowManager? = null
     
     // Transparent overlay container holding our views
@@ -52,15 +53,21 @@ class AutoTyperService : AccessibilityService() {
 
     companion object {
         const val ACTION_STOP_SERVICE = "STOP_SERVICE"
+        const val ACTION_SHOW_OVERLAY = "SHOW_OVERLAY"
         const val NOTIFICATION_ID = 1001
         const val CHANNEL_ID = "AutoTyperChannel"
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP_SERVICE) {
-            stopSelf()
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                disableSelf()
+        when (intent?.action) {
+            ACTION_STOP_SERVICE -> {
+                stopSelf()
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    disableSelf()
+                }
+            }
+            ACTION_SHOW_OVERLAY -> {
+                TyperState.isOverlayHidden.value = false
             }
         }
         return super.onStartCommand(intent, flags, startId)
@@ -82,6 +89,11 @@ class AutoTyperService : AccessibilityService() {
         scope.launch {
             TyperState.isMinimized.collect { min ->
                 updateViewStates(min)
+            }
+        }
+        scope.launch {
+            TyperState.isOverlayHidden.collect { hidden ->
+                containerView?.visibility = if (hidden) View.GONE else View.VISIBLE
             }
         }
     }
@@ -106,12 +118,20 @@ class AutoTyperService : AccessibilityService() {
             this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val showIntent = Intent(this, AutoTyperService::class.java).apply {
+            action = ACTION_SHOW_OVERLAY
+        }
+        val pendingShowIntent = PendingIntent.getService(
+            this, 1, showIntent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Auto Typer Aktif (Yazıcı)")
-            .setContentText("Kapatmak ve menüyü gizlemek için tıklayın")
+            .setContentText("Menüyü öne çıkarmak için tıklayın")
             .setSmallIcon(android.R.drawable.ic_menu_edit)
-            .addAction(android.R.drawable.ic_delete, "Durdur ve Kapat", pendingStopIntent)
-            .setContentIntent(pendingStopIntent)
+            .setContentIntent(pendingShowIntent)
+            .addAction(android.R.drawable.ic_menu_view, "Menüyü Göster", pendingShowIntent)
+            .addAction(android.R.drawable.ic_delete, "Durdur", pendingStopIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
@@ -182,6 +202,9 @@ class AutoTyperService : AccessibilityService() {
         
         // Minimize toggle trigger
         val btnMin = createStyleButton("MIN", "#E631111D")
+
+        // Hide overlay trigger
+        val btnHide = createStyleButton("GİZL", "#625B71")
         
         // Direct close app service trigger
         val btnClose = createStyleButton("X", "#93000A")
@@ -189,6 +212,7 @@ class AutoTyperService : AccessibilityService() {
         expandedLayout.addView(btnPlay)
         expandedLayout.addView(btnRec)
         expandedLayout.addView(btnMin)
+        expandedLayout.addView(btnHide)
         expandedLayout.addView(btnClose)
 
         // Simple touch draggable accent lines helper
@@ -255,6 +279,10 @@ class AutoTyperService : AccessibilityService() {
 
         btnMin?.setOnClickListener {
             TyperState.isMinimized.value = true
+        }
+
+        btnHide.setOnClickListener {
+            TyperState.isOverlayHidden.value = true
         }
 
         minimizedView?.setOnClickListener {
@@ -346,6 +374,68 @@ class AutoTyperService : AccessibilityService() {
         minimizedView?.setOnTouchListener(dragListener)
     }
 
+    private fun findTargetInputNode(): AccessibilityNodeInfo? {
+        // Option 1: Last interacted node (the exact one the user typed on or clicked)
+        val lastNode = lastInteractedNode
+        if (lastNode != null) {
+            try {
+                if (lastNode.refresh() && lastNode.isEnabled && lastNode.isEditable) {
+                    return lastNode
+                }
+            } catch (e: Exception) {
+                // Ignore refresh/access errors
+            }
+        }
+        
+        // Option 2: Active focused node in the active window
+        val rootNode = rootInActiveWindow
+        val focusedNode = findFocusedNode(rootNode)
+        if (focusedNode != null) {
+            return focusedNode
+        }
+        
+        // Option 3: Any editable node on the active screen
+        val editableNode = findEditableInputNode(rootNode)
+        if (editableNode != null) {
+            return editableNode
+        }
+        
+        return null
+    }
+
+    private fun findEditableInputNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+        if (node == null) return null
+        if (node.isEditable) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i)
+            val result = findEditableInputNode(child)
+            if (result != null) return result
+        }
+        return null
+    }
+
+    private fun findSendButtonInSiblings(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        val parent = node.parent ?: return false
+        for (i in 0 until parent.childCount) {
+            val sibling = parent.getChild(i) ?: continue
+            if (sibling.isClickable) {
+                val txt = sibling.text?.toString()?.lowercase() ?: ""
+                val desc = sibling.contentDescription?.toString()?.lowercase() ?: ""
+                val viewId = sibling.viewIdResourceName?.lowercase() ?: ""
+                
+                if (txt.contains("gönder") || txt.contains("gonder") || txt.contains("send") || txt.contains("yolla") || txt.contains("ilet") || txt.contains("submit") ||
+                    desc.contains("gönder") || desc.contains("gonder") || desc.contains("send") || desc.contains("yolla") || desc.contains("ilet") || desc.contains("submit") ||
+                    viewId.contains("send") || viewId.contains("gonder") || viewId.contains("submit") || viewId.contains("btn")
+                ) {
+                    sibling.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     private fun startTyping() {
         val phrase = TyperState.activePhrase.value
         if (phrase == null) {
@@ -365,19 +455,18 @@ class AutoTyperService : AccessibilityService() {
             val autoSendState = TyperState.autoSend.value
             
             for (i in 1..phrase.repeatCount) {
-                // Focus container lookup
-                val rootNode = rootInActiveWindow
-                val focusedInput = findFocusedNode(rootNode)
+                val targetInput = findTargetInputNode()
                 
-                if (focusedInput != null && focusedInput.isEditable) {
+                if (targetInput != null) {
                     val bundle = Bundle()
                     bundle.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, phrase.text)
-                    focusedInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
+                    targetInput.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, bundle)
 
                     // Auto Send click action
                     if (autoSendState) {
                         delay(120) // Brief delay to let the input register
-                        findAndClickSendButton(rootNode)
+                        val rootNode = rootInActiveWindow
+                        findAndClickSendButton(rootNode) || findSendButtonInSiblings(targetInput)
                     }
 
                     launch(Dispatchers.Main) {
@@ -465,6 +554,19 @@ class AutoTyperService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
+
+        // Cache the last interacted node immediately if it is editable
+        val source = event.source
+        if (source != null) {
+            try {
+                if (source.isEditable) {
+                    lastInteractedNode?.recycle()
+                    lastInteractedNode = AccessibilityNodeInfo.obtain(source)
+                }
+            } catch (e: Exception) {
+                // Ignore silent tracker issues
+            }
+        }
         
         // Listen to text inputs if user is typing on normal fields in other apps
         if (TyperState.learnMode.value) {
@@ -493,6 +595,8 @@ class AutoTyperService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         stopTyping()
+        lastInteractedNode?.recycle()
+        lastInteractedNode = null
         containerView?.let {
             windowManager?.removeView(it)
         }

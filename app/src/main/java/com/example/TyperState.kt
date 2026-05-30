@@ -11,6 +11,7 @@ object TyperState {
     val learnMode = MutableStateFlow(true)
     val floatingAlpha = MutableStateFlow(0.9f)
     val isMinimized = MutableStateFlow(false)
+    val isOverlayHidden = MutableStateFlow(false)
     
     // Guide/Tutorial State (0 refers to step 1, -1 means dismissed)
     val tutorialStep = MutableStateFlow(0)
