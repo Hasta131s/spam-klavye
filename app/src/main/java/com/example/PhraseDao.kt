@@ -16,4 +16,13 @@ interface PhraseDao {
 
     @Delete
     suspend fun delete(phrase: Phrase)
+
+    @Query("SELECT * FROM typer_logs ORDER BY id DESC")
+    fun getAllLogs(): Flow<List<TyperLog>>
+
+    @Insert
+    suspend fun insertLog(log: TyperLog)
+
+    @Query("DELETE FROM typer_logs")
+    suspend fun clearLogs()
 }
