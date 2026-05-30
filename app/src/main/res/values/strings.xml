@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Auto Typer</string>
+    <string name="accessibility_service_desc">Auto Typer service used to automatically input your saved texts.</string>
+</resources>
